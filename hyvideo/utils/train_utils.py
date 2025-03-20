@@ -355,7 +355,6 @@ def prepare_model_inputs(
 
     return latents, model_kwargs, freqs_cos.shape[0], cond_latents
 
-
 def format_params(params):
     if params < 1e6:
         return f"{params} (less than 1M)"

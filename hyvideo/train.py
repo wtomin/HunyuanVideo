@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader
 
 from hyvideo.config import parse_args
 from hyvideo.constants import C_SCALE, PROMPT_TEMPLATE
-from hyvideo.dataset.video_loader import VideoDataset
+from hyvideo.dataset.video_dataset import VideoDataset
 from hyvideo.diffusion import load_denoiser
 from hyvideo.ds_config import get_deepspeed_config
 from hyvideo.utils.train_utils import (
@@ -466,14 +466,14 @@ def main(args):
     # ============================== Load dataset ==============================
     if "video" in args.data_type:
         video_dataset = VideoDataset(
-            data_jsons_path=args.data_jsons_path,
+            csv_path=args.csv_path,
+            video_folder=args.video_folder,
+            target_size = args.target_size,
             sample_n_frames=args.sample_n_frames,
             sample_stride=args.sample_stride,
             text_encoder=text_encoder,
             text_encoder_2=text_encoder_2,
-            uncond_p=args.uncond_p,
-            args=args,
-            logger=logger,
+            text_drop_prob=args.uncond_p,
         )
         video_sampler = DistributedSampler(
             video_dataset,

@@ -47,6 +47,7 @@ from ...constants import PRECISION_TO_TYPE
 from ...vae.autoencoder_kl_causal_3d import AutoencoderKLCausal3D
 from ...text_encoder import TextEncoder
 from ...modules import HYVideoDiffusionTransformer
+from ...utils.data_utils import black_image
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -250,6 +251,7 @@ class HunyuanVideoPipeline(DiffusionPipeline):
         clip_skip: Optional[int] = None,
         text_encoder: Optional[TextEncoder] = None,
         data_type: Optional[str] = "image",
+        semantic_images=None
     ):
         r"""
         Encodes the prompt into text encoder hidden states.
@@ -314,7 +316,7 @@ class HunyuanVideoPipeline(DiffusionPipeline):
 
             if clip_skip is None:
                 prompt_outputs = text_encoder.encode(
-                    text_inputs, data_type=data_type, device=device
+                    text_inputs, data_type=data_type, semantic_images=semantic_images, device=device
                 )
                 prompt_embeds = prompt_outputs.hidden_state
             else:
@@ -322,6 +324,7 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                     text_inputs,
                     output_hidden_states=True,
                     data_type=data_type,
+                    semantic_images=semantic_images,
                     device=device,
                 )
                 # Access the `hidden_states` first, that contains a tuple of
@@ -397,8 +400,13 @@ class HunyuanVideoPipeline(DiffusionPipeline):
             # max_length = prompt_embeds.shape[1]
             uncond_input = text_encoder.text2tokens(uncond_tokens, data_type=data_type)
 
+            if semantic_images is not None:
+                uncond_image = [black_image(img.size[0], img.size[1]) for img in semantic_images]
+            else:
+                uncond_image = None
+
             negative_prompt_outputs = text_encoder.encode(
-                uncond_input, data_type=data_type, device=device
+                uncond_input, data_type=data_type, semantic_images=uncond_image, device=device
             )
             negative_prompt_embeds = negative_prompt_outputs.hidden_state
 
@@ -566,7 +574,13 @@ class HunyuanVideoPipeline(DiffusionPipeline):
         device,
         generator,
         latents=None,
+        img_latents=None,
+        i2v_mode=False,
+        i2v_condition_type=None,
+        i2v_stability=True,
     ):
+        if i2v_mode and i2v_condition_type == "latent_concat":
+            num_channels_latents = (num_channels_latents - 1) // 2
         shape = (
             batch_size,
             num_channels_latents,
@@ -579,6 +593,16 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                 f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
                 f" size of {batch_size}. Make sure the batch size matches the length of the generators."
             )
+
+        if i2v_mode and i2v_stability:
+            if img_latents.shape[2] == 1:
+                img_latents = img_latents.repeat(1, 1, video_length, 1, 1)
+            x0 = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+            x1 = img_latents
+
+            t = torch.tensor([0.999]).to(device=device)
+            latents = x0 * t + x1 * (1 - t)
+            latents = latents.to(dtype=dtype)
 
         if latents is None:
             latents = randn_tensor(
@@ -699,6 +723,11 @@ class HunyuanVideoPipeline(DiffusionPipeline):
         enable_tiling: bool = False,
         n_tokens: Optional[int] = None,
         embedded_guidance_scale: Optional[float] = None,
+        i2v_mode: bool = False,
+        i2v_condition_type: str = None,
+        i2v_stability: bool = True,
+        img_latents: Optional[torch.Tensor] = None,
+        semantic_images=None,
         **kwargs,
     ):
         r"""
@@ -862,6 +891,7 @@ class HunyuanVideoPipeline(DiffusionPipeline):
             lora_scale=lora_scale,
             clip_skip=self.clip_skip,
             data_type=data_type,
+            semantic_images=semantic_images
         )
         if self.text_encoder_2 is not None:
             (
@@ -935,7 +965,25 @@ class HunyuanVideoPipeline(DiffusionPipeline):
             device,
             generator,
             latents,
+            img_latents=img_latents,
+            i2v_mode=i2v_mode,
+            i2v_condition_type=i2v_condition_type,
+            i2v_stability=i2v_stability
         )
+
+        if i2v_mode and i2v_condition_type == "latent_concat":
+            if img_latents.shape[2] == 1:
+                img_latents_concat = img_latents.repeat(1, 1, video_length, 1, 1)
+            else:
+                img_latents_concat = img_latents
+            img_latents_concat[:, :, 1:, ...] = 0
+
+            i2v_mask = torch.zeros(video_length)
+            i2v_mask[0] = 1
+
+            mask_concat = torch.ones(img_latents_concat.shape[0], 1, img_latents_concat.shape[2], img_latents_concat.shape[3],
+                                     img_latents_concat.shape[4]).to(device=img_latents.device)
+            mask_concat[:, :, 1:, ...] = 0
 
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_func_kwargs(
@@ -962,12 +1010,21 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                 if self.interrupt:
                     continue
 
+                if i2v_mode and i2v_condition_type == "token_replace":
+                    latents = torch.concat([img_latents, latents[:, :, 1:, :, :]], dim=2)
+
                 # expand the latents if we are doing classifier free guidance
+                if i2v_mode and i2v_condition_type == "latent_concat":
+                    latent_model_input = torch.concat([latents, img_latents_concat, mask_concat], dim=1)
+                else:
+                    latent_model_input = latents
+
                 latent_model_input = (
-                    torch.cat([latents] * 2)
+                    torch.cat([latent_model_input] * 2)
                     if self.do_classifier_free_guidance
-                    else latents
+                    else latent_model_input
                 )
+
                 latent_model_input = self.scheduler.scale_model_input(
                     latent_model_input, t
                 )
@@ -1018,9 +1075,17 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                     )
 
                 # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(
-                    noise_pred, t, latents, **extra_step_kwargs, return_dict=False
-                )[0]
+                if i2v_mode and i2v_condition_type == "token_replace":
+                    latents = self.scheduler.step(
+                        noise_pred[:, :, 1:, :, :], t, latents[:, :, 1:, :, :], **extra_step_kwargs, return_dict=False
+                    )[0]
+                    latents = torch.concat(
+                        [img_latents, latents], dim=2
+                    )
+                else:
+                    latents = self.scheduler.step(
+                        noise_pred, t, latents, **extra_step_kwargs, return_dict=False
+                    )[0]
 
                 if callback_on_step_end is not None:
                     callback_kwargs = {}
@@ -1090,6 +1155,9 @@ class HunyuanVideoPipeline(DiffusionPipeline):
         image = (image / 2 + 0.5).clamp(0, 1)
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloa16
         image = image.cpu().float()
+
+        if i2v_mode and i2v_condition_type == "latent_concat":
+            image = image[:, :, 4:, :, :]
 
         # Offload all models
         self.maybe_free_model_hooks()

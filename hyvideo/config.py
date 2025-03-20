@@ -57,8 +57,14 @@ def add_data_args(parser: argparse.ArgumentParser):
     group = parser.add_argument_group(title="Data")
 
     group.add_argument("--data-type", type=str, default="image", choices=DATA_TYPE, help="Type of the dataset.")
-    group.add_argument("--data-jsons-path", type=str, default=None, help="Dataset path for training.")
-    group.add_argument("--sample-n-frames", type=int, default=65,
+    group.add_argument("--csv-path", type=str, default=None, help="Dataset path for training.")
+    group.add_argument("--video-folder", type=str, default=None, help="Dataset path for training.")
+    group.add_argument("--target-size", 
+        type=int,
+        nargs="+",
+        default=(256, 256),
+        help="Dataset path for training.")
+    group.add_argument("--sample-n-frames", type=int, default=29,
                        help="How many frames to sample from a video. if using 3d vae, the number should be 4n+1")
     group.add_argument("--sample-stride", type=int, default=1,
                        help="How many frames to skip when sampling from a video.")
