@@ -283,7 +283,7 @@ def prepare_model_inputs(
             raise ValueError(
                 f"Only support media with shape (b, c, h, w) or (b, c, f, h, w), but got {media.shape}."
             )
-
+        # print(f"run vae encoding on video input: {media.shape}")
         vae_dtype = PRECISION_TO_TYPE[args.vae_precision]
         with torch.autocast(
             device_type="cuda", dtype=vae_dtype, enabled=vae_dtype != torch.float32
@@ -308,7 +308,7 @@ def prepare_model_inputs(
         if random.random() < args.sematic_cond_drop_p
         else torch.tensor(0).to(torch.int64)
     )
-    semantic_images = get_cond_images(args, latents, vae, is_uncond=is_uncond)
+    # semantic_images = get_cond_images(args, latents, vae, is_uncond=is_uncond)
 
     # ======================================== Encode text ======================================
     # Autocast is handled by text_encoder itself.
@@ -316,7 +316,7 @@ def prepare_model_inputs(
     text_outputs = text_encoder.encode(
         {"input_ids": text_ids, "attention_mask": text_mask},
         data_type=batch_args[-1]["type"][0],
-        semantic_images=semantic_images,
+        # semantic_images=semantic_images,  # no semantic images for t2v
     )
     text_states = text_outputs.hidden_state
     text_mask = text_outputs.attention_mask
