@@ -9,8 +9,9 @@ import torch
 import cv2
 import numpy as np
 from hyvideo.constants import VAE_PATH
-
-from hyvideo.utils.dataset_utils import DecordDecoder, create_video_transforms
+from torchvision import transforms
+from torchvision.transforms import Lambda
+from hyvideo.utils.dataset_utils import DecordDecoder, CenterCropResizeVideo, ToTensorVideo
 from tqdm import tqdm
 
 _logger = logging.getLogger(__name__)
@@ -98,14 +99,12 @@ class VideoDataset:
         self.tokenizer = tokenizer
         self.target_size = target_size
 
-        self.pixel_transforms = create_video_transforms(
-            size=target_size,
-            crop_size=target_size,
-            random_crop=False,
-            disable_flip=False,
-            num_frames=sample_n_frames,
-        )
-
+        self.pixel_transforms = transforms.Compose([
+            ToTensorVideo(),
+            CenterCropResizeVideo(**target_size),
+            Lambda(lambda x: 2. * x - 1.),
+        ])  
+        
         self.vae_type = vae_type
         self.model_patch_size = model_patch_size
         self.model_hidden_size = model_hidden_size
@@ -243,18 +242,14 @@ class VideoDataset:
             # return frames mask with respect to the vae's latent temporal compression
             data["frames_mask"] = self._fmask_gen(self._t_compress_func(num_frames))
         # video/image transforms: resize, crop, normalize, reshape
-        pixel_values = data["video"]
-        inputs = {"image": pixel_values[0]}
-        for i in range(num_frames - 1):
-            inputs[f"image{i}"] = pixel_values[i + 1]
+        pixel_values = torch.tensor( data["video"], type=torch.uint8).permute(0, 3, 1, 2) # (t h w c) -> (t c h w)
+        assert pixel_values.shape[1] == 3 and pixel_values.shape[0] ==  num_frames
+        
+        pixel_values = self.pixel_transforms(pixel_values) 
 
-        output = self.pixel_transforms(**inputs)
-        pixel_values = np.stack(list(output.values()), axis=0)
-        # (t h w c) -> (c t h w)
-        pixel_values = np.transpose(pixel_values, (3, 0, 1, 2))
-        pixel_values = pixel_values / 127.5 - 1.0
+        # (t c h w) -> (c t h w)
+        pixel_values = pixel_values.transpose(0, 1)
 
-        pixel_values = torch.tensor(pixel_values)
         prompt = data["caption"]
         kwargs = {
             "text": prompt,

@@ -1,7 +1,6 @@
-import csv
+
 import logging
-import os
-from pathlib import Path
+from PIL import Image
 
 import decord
 import numpy as np
@@ -37,225 +36,688 @@ class DecordDecoder(object):
             print("get_batch execption:", e)
             return None
 
+import torch
+import random
+import numbers
+import numpy as np
 
-def create_video_transforms(
-    size, crop_size, num_frames, interpolation="bicubic", backend="al", disable_flip=True, random_crop=False
-):
+
+def _is_tensor_video_clip(clip):
+    if not torch.is_tensor(clip):
+        raise TypeError("clip should be Tensor. Got %s" % type(clip))
+
+    if not clip.ndimension() == 4:
+        raise ValueError("clip should be 4D. Got %dD" % clip.dim())
+
+    return True
+
+
+def center_crop_arr(pil_image, image_size):
     """
-    pipeline: flip -> resize -> crop
-    NOTE: we change interpolation to bicubic for its better precision and used in SD. TODO: check impact on performance
+    Center cropping implementation from ADM.
+    https://github.com/openai/guided-diffusion/blob/8fb3ad9197f16bbc40620447b2742e13458d2831/guided_diffusion/image_datasets.py#L126
+    """
+    while min(*pil_image.size) >= 2 * image_size:
+        pil_image = pil_image.resize(
+            tuple(x // 2 for x in pil_image.size), resample=Image.BOX
+        )
+
+    scale = image_size / min(*pil_image.size)
+    pil_image = pil_image.resize(
+        tuple(round(x * scale) for x in pil_image.size), resample=Image.BICUBIC
+    )
+
+    arr = np.array(pil_image)
+    crop_y = (arr.shape[0] - image_size) // 2
+    crop_x = (arr.shape[1] - image_size) // 2
+    return Image.fromarray(arr[crop_y: crop_y + image_size, crop_x: crop_x + image_size])
+
+
+def crop(clip, i, j, h, w):
+    """
     Args:
-        size: resize to this size
-        crop_size: tuple or integer, crop to this size.
-        num_frames: number of frames in the video.
-        interpolation: interpolation method.
-        backend: backend to use. Currently only support albumentations.
-        disable_flip: disable flip.
-        random_crop: crop randomly. If False, crop center.
+        clip (torch.tensor): Video clip to be cropped. Size is (T, C, H, W)
     """
-    if isinstance(crop_size, (tuple, list)):
-        h, w = crop_size
+    if len(clip.size()) != 4:
+        raise ValueError("clip should be a 4D tensor")
+    return clip[..., i: i + h, j: j + w]
+
+
+def resize(clip, target_size, interpolation_mode):
+    if len(target_size) != 2:
+        raise ValueError(f"target size should be tuple (height, width), instead got {target_size}")
+    return torch.nn.functional.interpolate(clip, size=target_size, mode=interpolation_mode, align_corners=True, antialias=True)
+
+
+def resize_scale(clip, target_size, interpolation_mode):
+    if len(target_size) != 2:
+        raise ValueError(f"target size should be tuple (height, width), instead got {target_size}")
+    H, W = clip.size(-2), clip.size(-1)
+    scale_ = target_size[0] / min(H, W)
+    return torch.nn.functional.interpolate(clip, scale_factor=scale_, mode=interpolation_mode, align_corners=True, antialias=True)
+
+
+def resized_crop(clip, i, j, h, w, size, interpolation_mode="bilinear"):
+    """
+    Do spatial cropping and resizing to the video clip
+    Args:
+        clip (torch.tensor): Video clip to be cropped. Size is (T, C, H, W)
+        i (int): i in (i,j) i.e coordinates of the upper left corner.
+        j (int): j in (i,j) i.e coordinates of the upper left corner.
+        h (int): Height of the cropped region.
+        w (int): Width of the cropped region.
+        size (tuple(int, int)): height and width of resized clip
+    Returns:
+        clip (torch.tensor): Resized and cropped clip. Size is (T, C, H, W)
+    """
+    if not _is_tensor_video_clip(clip):
+        raise ValueError("clip should be a 4D torch.tensor")
+    clip = crop(clip, i, j, h, w)
+    clip = resize(clip, size, interpolation_mode)
+    return clip
+
+
+def center_crop(clip, crop_size):
+    if not _is_tensor_video_clip(clip):
+        raise ValueError("clip should be a 4D torch.tensor")
+    h, w = clip.size(-2), clip.size(-1)
+    th, tw = crop_size
+    if h < th or w < tw:
+        raise ValueError("height and width must be no smaller than crop_size")
+
+    i = int(round((h - th) / 2.0))
+    j = int(round((w - tw) / 2.0))
+    return crop(clip, i, j, th, tw)
+
+
+def center_crop_using_short_edge(clip):
+    if not _is_tensor_video_clip(clip):
+        raise ValueError("clip should be a 4D torch.tensor")
+    h, w = clip.size(-2), clip.size(-1)
+    if h < w:
+        th, tw = h, h
+        i = 0
+        j = int(round((w - tw) / 2.0))
     else:
-        h, w = crop_size, crop_size
+        th, tw = w, w
+        i = int(round((h - th) / 2.0))
+        j = 0
+    return crop(clip, i, j, th, tw)
 
-    if backend == "al":
-        # expect rgb image in range 0-255, shape (h w c)
-        import albumentations
-        import cv2
-        from albumentations import CenterCrop, HorizontalFlip, RandomCrop, SmallestMaxSize
 
-        targets = {"image{}".format(i): "image" for i in range(num_frames)}
-        mapping = {"bilinear": cv2.INTER_LINEAR, "bicubic": cv2.INTER_CUBIC}
-        if isinstance(size, (tuple, list)):
-            assert len(size) == 2, "Expect size should be a tuple or integer of (h, w)"
-            max_size_hw = size
-            size = None
-        elif isinstance(size, int):
-            max_size_hw = None
+
+def center_crop_th_tw(clip, th, tw, top_crop):
+    if not _is_tensor_video_clip(clip):
+        raise ValueError("clip should be a 4D torch.tensor")
+    
+    # import ipdb;ipdb.set_trace()
+    h, w = clip.size(-2), clip.size(-1)
+    tr = th / tw
+    if h / w > tr:
+        # hxw 720x1280  thxtw 320x640  hw_raito 9/16 > tr_ratio 8/16  newh=1280*320/640=640  neww=1280 
+        new_h = int(w * tr)
+        new_w = w
+    else:
+        # hxw 720x1280  thxtw 480x640  hw_raito 9/16 < tr_ratio 12/16   newh=720 neww=720/(12/16)=960  
+        # hxw 1080x1920  thxtw 720x1280  hw_raito 9/16 = tr_ratio 9/16   newh=1080 neww=1080/(9/16)=1920  
+        new_h = h
+        new_w = int(h / tr)
+    
+    i = 0 if top_crop else int(round((h - new_h) / 2.0))
+    j = int(round((w - new_w) / 2.0))
+    return crop(clip, i, j, new_h, new_w)
+
+def random_shift_crop(clip):
+    '''
+    Slide along the long edge, with the short edge as crop size
+    '''
+    if not _is_tensor_video_clip(clip):
+        raise ValueError("clip should be a 4D torch.tensor")
+    h, w = clip.size(-2), clip.size(-1)
+
+    if h <= w:
+        long_edge = w
+        short_edge = h
+    else:
+        long_edge = h
+        short_edge = w
+
+    th, tw = short_edge, short_edge
+
+    i = torch.randint(0, h - th + 1, size=(1,)).item()
+    j = torch.randint(0, w - tw + 1, size=(1,)).item()
+    return crop(clip, i, j, th, tw)
+
+
+def to_tensor(clip):
+    """
+    Convert tensor data type from uint8 to float, divide value by 255.0 and
+    permute the dimensions of clip tensor
+    Args:
+        clip (torch.tensor, dtype=torch.uint8): Size is (T, C, H, W)
+    Return:
+        clip (torch.tensor, dtype=torch.float): Size is (T, C, H, W)
+    """
+    _is_tensor_video_clip(clip)
+    if not clip.dtype == torch.uint8:
+        raise TypeError("clip tensor should have data type uint8. Got %s" % str(clip.dtype))
+    # return clip.float().permute(3, 0, 1, 2) / 255.0
+    return clip.float() / 255.0
+
+
+def to_tensor_after_resize(clip):
+    """
+    Convert resized tensor to [0, 1]
+    Args:
+        clip (torch.tensor, dtype=torch.float): Size is (T, C, H, W)
+    Return:
+        clip (torch.tensor, dtype=torch.float): Size is (T, C, H, W), but in [0, 1]
+    """
+    _is_tensor_video_clip(clip)
+    # return clip.float().permute(3, 0, 1, 2) / 255.0
+    return clip.float() / 255.0
+
+def normalize(clip, mean, std, inplace=False):
+    """
+    Args:
+        clip (torch.tensor): Video clip to be normalized. Size is (T, C, H, W)
+        mean (tuple): pixel RGB mean. Size is (3)
+        std (tuple): pixel standard deviation. Size is (3)
+    Returns:
+        normalized clip (torch.tensor): Size is (T, C, H, W)
+    """
+    if not _is_tensor_video_clip(clip):
+        raise ValueError("clip should be a 4D torch.tensor")
+    if not inplace:
+        clip = clip.clone()
+    mean = torch.as_tensor(mean, dtype=clip.dtype, device=clip.device)
+    # print(mean)
+    std = torch.as_tensor(std, dtype=clip.dtype, device=clip.device)
+    clip.sub_(mean[:, None, None, None]).div_(std[:, None, None, None])
+    return clip
+
+
+def hflip(clip):
+    """
+    Args:
+        clip (torch.tensor): Video clip to be normalized. Size is (T, C, H, W)
+    Returns:
+        flipped clip (torch.tensor): Size is (T, C, H, W)
+    """
+    if not _is_tensor_video_clip(clip):
+        raise ValueError("clip should be a 4D torch.tensor")
+    return clip.flip(-1)
+
+
+class RandomCropVideo:
+    def __init__(self, size):
+        if isinstance(size, numbers.Number):
+            self.size = (int(size), int(size))
         else:
-            raise ValueError("Expect size to be int or tuple of (h, w)")
-        transforms_list = [
-            SmallestMaxSize(max_size=size, max_size_hw=max_size_hw, interpolation=mapping[interpolation]),
-            CenterCrop(h, w) if not random_crop else RandomCrop(h, w),
-        ]
-        if not disable_flip:
-            transforms_list.insert(0, HorizontalFlip(p=0.5))
-        pixel_transforms = albumentations.Compose(
-            transforms_list,
-            additional_targets=targets,
-        )
+            self.size = size
+
+    def __call__(self, clip):
+        """
+        Args:
+            clip (torch.tensor): Video clip to be cropped. Size is (T, C, H, W)
+        Returns:
+            torch.tensor: randomly cropped video clip.
+                size is (T, C, OH, OW)
+        """
+        i, j, h, w = self.get_params(clip)
+        return crop(clip, i, j, h, w)
+
+    def get_params(self, clip):
+        h, w = clip.shape[-2:]
+        th, tw = self.size
+
+        if h < th or w < tw:
+            raise ValueError(f"Required crop size {(th, tw)} is larger than input image size {(h, w)}")
+
+        if w == tw and h == th:
+            return 0, 0, h, w
+
+        i = torch.randint(0, h - th + 1, size=(1,)).item()
+        j = torch.randint(0, w - tw + 1, size=(1,)).item()
+
+        return i, j, th, tw
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(size={self.size})"
+
+
+def get_params(h, w, stride):
+    
+    th, tw = h // stride * stride, w // stride * stride
+
+    i = (h - th) // 2
+    j = (w - tw) // 2
+
+    return i, j, th, tw 
+    
+class SpatialStrideCropVideo:
+    def __init__(self, stride):
+        self.stride = stride
+
+    def __call__(self, clip):
+        """
+        Args:
+            clip (torch.tensor): Video clip to be cropped. Size is (T, C, H, W)
+        Returns:
+            torch.tensor: cropped video clip by stride.
+                size is (T, C, OH, OW)
+        """
+        h, w = clip.shape[-2:] 
+        i, j, h, w = get_params(h, w, self.stride)
+        return crop(clip, i, j, h, w)
+
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(stride={self.stride})"  
+
+def longsideresize(h, w, size, skip_low_resolution):
+    if h <= size[0] and w <= size[1] and skip_low_resolution:
+        return h, w
+    
+    if h / w > size[0] / size[1]:
+        # hxw 720x1280  size 320x640  hw_raito 9/16 > size_ratio 8/16  neww=320/720*1280=568  newh=320  
+        w = int(size[0] / h * w)
+        h = size[0]
     else:
-        raise NotImplementedError
+        # hxw 720x1280  size 480x640  hw_raito 9/16 < size_ratio 12/16   newh=640/1280*720=360 neww=640  
+        # hxw 1080x1920  size 720x1280  hw_raito 9/16 = size_ratio 9/16   newh=1280/1920*1080=720 neww=1280  
+        h = int(size[1] / w * h)
+        w = size[1]
+    return h, w
 
-    return pixel_transforms
-
-
-def create_image_transforms(
-    size, crop_size, interpolation="bicubic", backend="al", random_crop=False, disable_flip=True
-):
-    if isinstance(crop_size, (tuple, list)):
-        h, w = crop_size
+def maxhwresize(ori_height, ori_width, max_hxw):
+    if ori_height * ori_width > max_hxw:
+        scale_factor = np.sqrt(max_hxw / (ori_height * ori_width))
+        new_height = int(ori_height * scale_factor)
+        new_width = int(ori_width * scale_factor)
     else:
-        h, w = crop_size, crop_size
+        new_height = ori_height
+        new_width = ori_width
+    return new_height, new_width
 
-    if backend == "pt":
-        from torchvision import transforms
-        from torchvision.transforms.functional import InterpolationMode
-
-        mapping = {"bilinear": InterpolationMode.BILINEAR, "bicubic": InterpolationMode.BICUBIC}
-
-        pixel_transforms = transforms.Compose(
-            [
-                transforms.Resize(size, interpolation=mapping[interpolation]),
-                transforms.CenterCrop((h, w)) if not random_crop else transforms.RandomCrop((h, w)),
-            ]
-        )
-    else:
-        # expect rgb image in range 0-255, shape (h w c)
-        import albumentations
-        import cv2
-        from albumentations import CenterCrop, HorizontalFlip, RandomCrop, SmallestMaxSize
-
-        mapping = {"bilinear": cv2.INTER_LINEAR, "bicubic": cv2.INTER_CUBIC}
-        transforms_list = [
-            SmallestMaxSize(max_size=size, interpolation=mapping[interpolation]),
-            CenterCrop(crop_size, crop_size) if not random_crop else RandomCrop(crop_size, crop_size),
-        ]
-        if not disable_flip:
-            transforms_list.insert(0, HorizontalFlip(p=0.5))
-
-        pixel_transforms = albumentations.Compose(transforms)
-
-    return pixel_transforms
-
-
-class VideoPairDataset:
-    """
-    A Video dataset that reads from both the real and generated video folders, and return a video pair
-    """
+class LongSideResizeVideo:
+    '''
+    First use the long side,
+    then resize to the specified size
+    '''
 
     def __init__(
-        self,
-        real_video_dir,
-        generated_video_dir,
-        num_frames,
-        real_data_file_path=None,
-        sample_rate=1,
-        crop_size=None,
-        size=128,
-        output_columns=["real", "generated"],
-    ) -> None:
-        super().__init__()
-        if real_data_file_path is not None:
-            print(f"Loading videos from data file {real_data_file_path}")
-            self.parse_data_file(real_data_file_path)
-            self.read_from_data_file = True
-        else:
-            self.real_video_files = self.combine_without_prefix(real_video_dir)
-            self.read_from_data_file = False
-        self.generated_video_files = self.combine_without_prefix(generated_video_dir)
-        assert (
-            len(self.real_video_files) == len(self.generated_video_files) and len(self.real_video_files) > 0
-        ), "Expect that the real and generated folders are not empty and contain the equal number of videos!"
-        self.num_frames = num_frames
-        self.sample_rate = sample_rate
-        self.crop_size = crop_size
+            self,
+            size,
+            skip_low_resolution=False, 
+            interpolation_mode="bilinear",
+    ):
         self.size = size
-        self.output_columns = output_columns
-        self.real_video_dir = real_video_dir
+        self.skip_low_resolution = skip_low_resolution
+        self.interpolation_mode = interpolation_mode
 
-        self.pixel_transforms = create_video_transforms(
-            size=self.size,
-            crop_size=crop_size,
-            random_crop=False,
-            disable_flip=True,
-            num_frames=num_frames,
-            backend="al",
-        )
+    def __call__(self, clip):
+        """
+        Args:
+            clip (torch.tensor): Video clip to be cropped. Size is (T, C, H, W)
+        Returns:
+            torch.tensor: scale resized video clip.
+        """
+        _, _, h, w = clip.shape
+        tr_h, tr_w = longsideresize(h, w, self.size, self.skip_low_resolution)
+        if h == tr_h and w == tr_w:
+            return clip
+        resize_clip = resize(clip, target_size=(tr_h, tr_w),
+                                         interpolation_mode=self.interpolation_mode)
+        return resize_clip
 
-    def __len__(self):
-        return len(self.real_video_files)
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(size={self.size}, interpolation_mode={self.interpolation_mode}"
 
-    def __getitem__(self, index):
-        if index >= len(self):
-            raise IndexError
-        if self.read_from_data_file:
-            video_dict = self.real_video_files[index]
-            video_fn = video_dict["video"]
-            real_video_file = os.path.join(self.real_video_dir, video_fn)
+
+class MaxHWResizeVideo:
+    '''
+    First use the h*w,
+    then resize to the specified size
+    '''
+
+    def __init__(
+            self,
+            max_hxw,
+            interpolation_mode="bilinear",
+    ):
+        self.max_hxw = max_hxw
+        self.interpolation_mode = interpolation_mode
+
+    def __call__(self, clip):
+        """
+        Args:
+            clip (torch.tensor): Video clip to be cropped. Size is (T, C, H, W)
+        Returns:
+            torch.tensor: scale resized video clip.
+        """
+        _, _, h, w = clip.shape
+        tr_h, tr_w = maxhwresize(h, w, self.max_hxw)
+        if h == tr_h and w == tr_w:
+            return clip
+        resize_clip = resize(clip, target_size=(tr_h, tr_w),
+                                         interpolation_mode=self.interpolation_mode)
+        return resize_clip
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(size={self.size}, interpolation_mode={self.interpolation_mode}"
+
+
+class CenterCropResizeVideo:
+    '''
+    First use the short side for cropping length,
+    center crop video, then resize to the specified size
+    '''
+
+    def __init__(
+            self,
+            size,
+            top_crop=False, 
+            interpolation_mode="bilinear",
+    ):
+        if len(size) != 2:
+            raise ValueError(f"size should be tuple (height, width), instead got {size}")
+        self.size = size
+        self.top_crop = top_crop
+        self.interpolation_mode = interpolation_mode
+
+    def __call__(self, clip):
+        """
+        Args:
+            clip (torch.tensor): Video clip to be cropped. Size is (T, C, H, W)
+        Returns:
+            torch.tensor: scale resized / center cropped video clip.
+                size is (T, C, crop_size, crop_size)
+        """
+        clip_center_crop = center_crop_th_tw(clip, self.size[0], self.size[1], top_crop=self.top_crop)
+        clip_center_crop_resize = resize(clip_center_crop, target_size=self.size,
+                                         interpolation_mode=self.interpolation_mode)
+        return clip_center_crop_resize
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(size={self.size}, interpolation_mode={self.interpolation_mode}"
+
+
+class UCFCenterCropVideo:
+    '''
+    First scale to the specified size in equal proportion to the short edge,
+    then center cropping
+    '''
+
+    def __init__(
+            self,
+            size,
+            interpolation_mode="bilinear",
+    ):
+        if isinstance(size, tuple):
+            if len(size) != 2:
+                raise ValueError(f"size should be tuple (height, width), instead got {size}")
+            self.size = size
         else:
-            real_video_file = self.real_video_files[index]
-        generated_video_file = self.generated_video_files[index]
-        if os.path.basename(real_video_file).split(".")[0] != os.path.basename(generated_video_file).split(".")[0]:
-            print(
-                f"Warning! video file name mismatch! real and generated {os.path.basename(real_video_file)} and {os.path.basename(generated_video_file)}"
-            )
-        real_video_tensor = self._load_video(real_video_file)
-        generated_video_tensor = self._load_video(generated_video_file)
-        return real_video_tensor.astype(np.float32), generated_video_tensor.astype(np.float32)
+            self.size = (size, size)
 
-    def parse_data_file(self, data_file_path):
-        if data_file_path.endswith(".csv"):
-            with open(data_file_path, "r") as csvfile:
-                self.real_video_files = list(csv.DictReader(csvfile))
+        self.interpolation_mode = interpolation_mode
+
+    def __call__(self, clip):
+        """
+        Args:
+            clip (torch.tensor): Video clip to be cropped. Size is (T, C, H, W)
+        Returns:
+            torch.tensor: scale resized / center cropped video clip.
+                size is (T, C, crop_size, crop_size)
+        """
+        clip_resize = resize_scale(clip=clip, target_size=self.size, interpolation_mode=self.interpolation_mode)
+        clip_center_crop = center_crop(clip_resize, self.size)
+        return clip_center_crop
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(size={self.size}, interpolation_mode={self.interpolation_mode}"
+
+
+class KineticsRandomCropResizeVideo:
+    '''
+    Slide along the long edge, with the short edge as crop size. And resie to the desired size.
+    '''
+
+    def __init__(
+            self,
+            size,
+            interpolation_mode="bilinear",
+    ):
+        if isinstance(size, tuple):
+            if len(size) != 2:
+                raise ValueError(f"size should be tuple (height, width), instead got {size}")
+            self.size = size
         else:
-            raise ValueError("Only support csv file now!")
-        self.real_video_files = sorted(self.real_video_files, key=lambda x: os.path.basename(x["video"]))
+            self.size = (size, size)
 
-    def _load_video(self, video_path):
-        num_frames = self.num_frames
-        sample_rate = self.sample_rate
-        decord_vr = DecordDecoder(video_path)
-        total_frames = len(decord_vr)
-        sample_frames_len = sample_rate * num_frames
+        self.interpolation_mode = interpolation_mode
 
-        if total_frames >= sample_frames_len:
-            s = 0
-            e = s + sample_frames_len
-            num_frames = num_frames
+    def __call__(self, clip):
+        clip_random_crop = random_shift_crop(clip)
+        clip_resize = resize(clip_random_crop, self.size, self.interpolation_mode)
+        return clip_resize
+
+
+class CenterCropVideo:
+    def __init__(
+            self,
+            size,
+            interpolation_mode="bilinear",
+    ):
+        if isinstance(size, tuple):
+            if len(size) != 2:
+                raise ValueError(f"size should be tuple (height, width), instead got {size}")
+            self.size = size
         else:
-            s = 0
-            e = total_frames
-            num_frames = int(total_frames / sample_frames_len * num_frames)
-            print(f"Video total number of frames {total_frames} is less than the target num_frames {sample_frames_len}")
-            print(video_path)
+            self.size = (size, size)
 
-        frame_id_list = np.linspace(s, e - 1, num_frames, dtype=int)
-        pixel_values = decord_vr.get_batch(frame_id_list).asnumpy()
-        # video_data = video_data.transpose(0, 3, 1, 2)  # (T, H, W, C) -> (C, T, H, W)
-        # NOTE:it's to ensure augment all frames in a video in the same way.
-        # ref: https://albumentations.ai/docs/examples/example_multi_target/
+        self.interpolation_mode = interpolation_mode
 
-        inputs = {"image": pixel_values[0]}
-        for i in range(num_frames - 1):
-            inputs[f"image{i}"] = pixel_values[i + 1]
+    def __call__(self, clip):
+        """
+        Args:
+            clip (torch.tensor): Video clip to be cropped. Size is (T, C, H, W)
+        Returns:
+            torch.tensor: center cropped video clip.
+                size is (T, C, crop_size, crop_size)
+        """
+        clip_center_crop = center_crop(clip, self.size)
+        return clip_center_crop
 
-        output = self.pixel_transforms(**inputs)
-
-        pixel_values = np.stack(list(output.values()), axis=0)
-        # (t h w c) -> (t c h w)
-        pixel_values = np.transpose(pixel_values, (0, 3, 1, 2))
-        pixel_values = pixel_values / 255.0
-        return pixel_values
-
-    def combine_without_prefix(self, folder_path, prefix="."):
-        folder = []
-        try:
-            folder_path = Path(folder_path)
-            if not folder_path.exists():
-                raise FileNotFoundError(f"Expect that {folder_path} exist!")
-
-            for file_path in folder_path.rglob("*"):
-                if file_path.is_file() and not (file_path.name.startswith(prefix) or file_path.suffix == ".txt"):
-                    folder.append(str(file_path))
-
-            folder_with_basename = [(os.path.basename(path), path) for path in folder]
-            folder_sorted = [path for _, path in sorted(folder_with_basename)]
-
-            return folder_sorted
-
-        except Exception as e:
-            print(f"An error occurred: {e}")
-            return []
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(size={self.size}, interpolation_mode={self.interpolation_mode}"
 
 
+class NormalizeVideo:
+    """
+    Normalize the video clip by mean subtraction and division by standard deviation
+    Args:
+        mean (3-tuple): pixel RGB mean
+        std (3-tuple): pixel RGB standard deviation
+        inplace (boolean): whether do in-place normalization
+    """
+
+    def __init__(self, mean, std, inplace=False):
+        self.mean = mean
+        self.std = std
+        self.inplace = inplace
+
+    def __call__(self, clip):
+        """
+        Args:
+            clip (torch.tensor): video clip must be normalized. Size is (C, T, H, W)
+        """
+        return normalize(clip, self.mean, self.std, self.inplace)
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(mean={self.mean}, std={self.std}, inplace={self.inplace})"
+
+
+class ToTensorVideo:
+    """
+    Convert tensor data type from uint8 to float, divide value by 255.0 and
+    permute the dimensions of clip tensor
+    """
+
+    def __init__(self):
+        pass
+
+    def __call__(self, clip):
+        """
+        Args:
+            clip (torch.tensor, dtype=torch.uint8): Size is (T, C, H, W)
+        Return:
+            clip (torch.tensor, dtype=torch.float): Size is (T, C, H, W)
+        """
+        return to_tensor(clip)
+
+    def __repr__(self) -> str:
+        return self.__class__.__name__
+    
+
+class ToTensorAfterResize:
+    """
+    Convert tensor data type from uint8 to float, divide value by 255.0 and
+    permute the dimensions of clip tensor
+    """
+
+    def __init__(self):
+        pass
+
+    def __call__(self, clip):
+        """
+        Args:
+            clip (torch.tensor, dtype=torch.float): Size is (T, C, H, W)
+        Return:
+            clip (torch.tensor, dtype=torch.float): Size is (T, C, H, W), but in [0, 1]
+        """
+        return to_tensor_after_resize(clip)
+
+    def __repr__(self) -> str:
+        return self.__class__.__name__
+
+
+
+class RandomHorizontalFlipVideo:
+    """
+    Flip the video clip along the horizontal direction with a given probability
+    Args:
+        p (float): probability of the clip being flipped. Default value is 0.5
+    """
+
+    def __init__(self, p=0.5):
+        self.p = p
+
+    def __call__(self, clip):
+        """
+        Args:
+            clip (torch.tensor): Size is (T, C, H, W)
+        Return:
+            clip (torch.tensor): Size is (T, C, H, W)
+        """
+        if random.random() < self.p:
+            clip = hflip(clip)
+        return clip
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(p={self.p})"
+
+
+#  ------------------------------------------------------------
+#  ---------------------  Sampling  ---------------------------
+#  ------------------------------------------------------------
+class TemporalRandomCrop(object):
+    """Temporally crop the given frame indices at a random location.
+
+    Args:
+        size (int): Desired length of frames will be seen in the model.
+    """
+
+    def __init__(self, size):
+        self.size = size
+
+    def __call__(self, total_frames):
+        rand_end = max(0, total_frames - self.size - 1)
+        begin_index = random.randint(0, rand_end)
+        end_index = min(begin_index + self.size, total_frames)
+        return begin_index, end_index
+
+class DynamicSampleDuration(object):
+    """Temporally crop the given frame indices at a random location.
+
+    Args:
+        size (int): Desired length of frames will be seen in the model.
+    """
+
+    def __init__(self, t_stride, extra_1):
+        self.t_stride = t_stride
+        self.extra_1 = extra_1
+
+    def __call__(self, t, h, w):
+        if self.extra_1:
+            t = t - 1
+        truncate_t_list = list(range(t+1))[t//2:][::self.t_stride]  # need half at least
+        truncate_t = random.choice(truncate_t_list)
+        if self.extra_1:
+            truncate_t = truncate_t + 1
+        return 0, truncate_t
+
+
+    from torchvision import transforms
+    import torchvision.io as io
+    import numpy as np
+    from torchvision.utils import save_image
+    import os
+
+    vframes, aframes, info = io.read_video(
+        filename='./v_Archery_g01_c03.avi',
+        pts_unit='sec',
+        output_format='TCHW'
+    )
+
+    trans = transforms.Compose([
+        ToTensorVideo(),
+        RandomHorizontalFlipVideo(),
+        UCFCenterCropVideo(512),
+        # NormalizeVideo(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
+    ])
+
+    target_video_len = 32
+    frame_interval = 1
+    total_frames = len(vframes)
+    print(total_frames)
+
+    temporal_sample = TemporalRandomCrop(target_video_len * frame_interval)
+
+    # Sampling video frames
+    start_frame_ind, end_frame_ind = temporal_sample(total_frames)
+    # print(start_frame_ind)
+    # print(end_frame_ind)
+    assert end_frame_ind - start_frame_ind >= target_video_len
+    frame_indice = np.linspace(start_frame_ind, end_frame_ind - 1, target_video_len, dtype=int)
+    print(frame_indice)
+
+    select_vframes = vframes[frame_indice]
+    print(select_vframes.shape)
+    print(select_vframes.dtype)
+
+    select_vframes_trans = trans(select_vframes)
+    print(select_vframes_trans.shape)
+    print(select_vframes_trans.dtype)
+
+    select_vframes_trans_int = ((select_vframes_trans * 0.5 + 0.5) * 255).to(dtype=torch.uint8)
+    print(select_vframes_trans_int.dtype)
+    print(select_vframes_trans_int.permute(0, 2, 3, 1).shape)
+
+    io.write_video('./test.avi', select_vframes_trans_int.permute(0, 2, 3, 1), fps=8)
+
+    for i in range(target_video_len):
+        save_image(select_vframes_trans[i], os.path.join('./test000', '%04d.png' % i), normalize=True,
+                   value_range=(-1, 1))
