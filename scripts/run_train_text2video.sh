@@ -21,7 +21,7 @@ params=" \
     --warmup-num-steps 500 \
     --global-seed 1024 \
     --tensorboard \
-    --zero-stage 2 \
+    --zero-stage 3 \
     --vae 884-16c-hy \
     --vae-precision fp16 \
     --vae-tiling \
@@ -39,7 +39,7 @@ video_data_params=" \
     --data-type video \
     --csv-path ${CSV_PATH} \
     --video-folder ${VIDEO_FOLDER} \
-    --sample-n-frames 129 \
+    --sample-n-frames 29 \
     --video-size 256 256 \
     --sample-stride 1 \
     --num-workers 8 \
