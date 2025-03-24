@@ -10,8 +10,8 @@ def parse_args(mode="eval", namespace=None):
     parser = add_network_args(parser)
     parser = add_extra_models_args(parser)
     parser = add_denoise_schedule_args(parser)
-    # parser = add_i2v_args(parser)
-    # parser = add_lora_args(parser)
+    parser = add_i2v_args(parser)
+    parser = add_lora_args(parser)
     parser = add_inference_args(parser)
     parser = add_parallel_args(parser)
     if mode == "train":
@@ -25,6 +25,47 @@ def parse_args(mode="eval", namespace=None):
 
     return args
 
+def add_i2v_args(parser: argparse.ArgumentParser):
+    group = parser.add_argument_group(title="I2V args")
+
+    group.add_argument("--i2v-mode", action="store_true", help="Whether to open i2v mode.")
+
+    group.add_argument(
+        "--i2v-resolution",
+        type=str,
+        default="720p",
+        choices=["720p", "540p", "360p"],
+        help="Resolution for i2v inference.",
+    )
+
+    group.add_argument(
+        "--i2v-image-path", type=str, default="./assets/demo/i2v/imgs/0.png", help="Image path for i2v inference."
+    )
+
+    group.add_argument(
+        "--i2v-condition-type",
+        type=str,
+        default="token_replace",
+        choices=["token_replace", "latent_concat"],
+        help="Condition type for i2v model.",
+    )
+
+    group.add_argument("--i2v-stability", action="store_true", help="Whether to use i2v stability mode.")
+
+    return parser
+
+def add_lora_args(parser: argparse.ArgumentParser):
+    group = parser.add_argument_group(title="lora args")
+
+    group.add_argument("--use-lora", action="store_true", help="Whether to open lora mode.")
+
+    group.add_argument("--lora-path", type=str, default="", help="Weight path for lora model.")
+
+    group.add_argument("--lora-scale", type=float, default=1.0, help="Fusion scale for lora model.")
+
+    group.add_argument("--lora-rank", type=int, default=64, help="Rank for lora model.")
+
+    return parser
 
 def add_train_denoise_schedule_args(parser: argparse.ArgumentParser):
     group = parser.add_argument_group(title="Denoise schedule")
