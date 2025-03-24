@@ -68,10 +68,10 @@ export TOKENIZERS_PARALLELISM=false
 set -x
 
 #deepspeed --hostfile $hostfile --master_addr "${CHIEF_IP}" \
-# single node, multi gpu
-#deepspeed --include localhost:0,1,2,3,4,5,6,7 --master_addr "${CHIEF_IP}" \
 # single node, single gpu
-deepspeed --include localhost:0 --master_addr "${CHIEF_IP}" \
+# deepspeed --include localhost:0 --master_addr "${CHIEF_IP}" \
+# single node, multi gpu
+deepspeed --include localhost:0,1,2,3,4,5,6,7 --master_addr "${CHIEF_IP}" \
 train.py \
     ${params} \
     ${video_data_params} \
