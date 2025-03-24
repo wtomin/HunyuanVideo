@@ -28,7 +28,7 @@ params=" \
     --denoise-type flow \
     --flow-reverse \
     --flow-shift 7.0 \
-    --model HYVideo-T/2-cfgdistill \
+    --model HYVideo-T/2 \
     --video-micro-batch-size 1 \
     --gradient-checkpoint \
     --ckpt-every 500 \
