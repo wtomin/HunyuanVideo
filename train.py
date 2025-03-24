@@ -395,15 +395,6 @@ def main(args):
     else:
         lr_scheduler = None
 
-    logger.info("Initializing optimizer (using deepspeed)...")
-    model_engine, opt, _, scheduler = deepspeed.initialize(
-        args=args,
-        model=model,
-        model_parameters=get_trainable_params(model, args),
-        config_params=deepspeed_config,
-        lr_scheduler=lr_scheduler,
-    )
-
     # ====================== Build denoise scheduler ========================
     logger.info("Building denoise scheduler...")
     denoiser = load_denoiser(args)
@@ -455,15 +446,6 @@ def main(args):
     else:
         text_encoder, text_encoder_2 = None, None
 
-    # ================== Define dtype and forward autocast ===============
-    target_dtype = None
-    autocast_enabled = False
-    if model_engine.bfloat16_enabled():
-        target_dtype = torch.bfloat16
-        autocast_enabled = True
-    elif model_engine.fp16_enabled():
-        target_dtype = torch.half
-        autocast_enabled = True
 
     # ============================== Load dataset ==============================
     if "video" in args.data_type:
@@ -558,6 +540,26 @@ def main(args):
         logger.info(f"  Text encoder 2:            {text_encoder_2}")
     logger.info(f"  Experiment directory:      {ckpt_dir}")
     logger.info("*******************************************************************************")
+
+    # ================== Define dtype and forward autocast ===============
+
+    logger.info("Initializing optimizer (using deepspeed)...")
+    model_engine, opt, _, scheduler = deepspeed.initialize(
+        args=args,
+        model=model,
+        model_parameters=get_trainable_params(model, args),
+        config_params=deepspeed_config,
+        lr_scheduler=lr_scheduler,
+    )
+
+    target_dtype = None
+    autocast_enabled = False
+    if model_engine.bfloat16_enabled():
+        target_dtype = torch.bfloat16
+        autocast_enabled = True
+    elif model_engine.fp16_enabled():
+        target_dtype = torch.half
+        autocast_enabled = True
 
     # ============================= Start training =============================
     model_engine.train()
