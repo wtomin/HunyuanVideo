@@ -412,17 +412,9 @@ def main(args):
     # Text encoder
     text_encoder = TextEncoder(
         text_encoder_type=args.text_encoder,
-        max_length=args.text_len
-        + (
-            PROMPT_TEMPLATE[args.prompt_template_video].get("crop_start", 0)
-            if args.prompt_template_video is not None
-            else PROMPT_TEMPLATE[args.prompt_template].get("crop_start", 0)
-            if args.prompt_template is not None
-            else 0
-        ),
+        max_length=args.text_len,
         text_encoder_precision=args.text_encoder_precision,
         tokenizer_type=args.tokenizer,
-        i2v_mode=args.i2v_mode,
         prompt_template=(
             PROMPT_TEMPLATE[args.prompt_template]
             if args.prompt_template is not None
@@ -438,7 +430,6 @@ def main(args):
         reproduce=args.reproduce,
         logger=logger,
         device=device,
-        image_embed_interleave=image_embed_interleave
     )
     print("Text encoder loaded successfully!")
     if args.text_encoder_2 is not None:

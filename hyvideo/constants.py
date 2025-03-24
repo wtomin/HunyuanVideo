@@ -111,7 +111,7 @@ MODEL_BASE = os.getenv("MODEL_BASE", "./ckpts")
 DATA_TYPE = {"image", "video", "image_video"}
 
 # 3D VAE
-VAE_PATH = {"884-16c-hy": f"{MODEL_BASE}/hunyuan-video-i2v-720p/vae"}
+VAE_PATH = {"884-16c-hy": f"{MODEL_BASE}/hunyuan-video-t2v-720p/vae"}
 
 # Text Encoder
 TEXT_ENCODER_PATH = {
