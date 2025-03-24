@@ -101,7 +101,7 @@ class VideoDataset:
 
         self.pixel_transforms = transforms.Compose([
             ToTensorVideo(),
-            CenterCropResizeVideo(**target_size),
+            CenterCropResizeVideo(size=target_size),
             Lambda(lambda x: 2. * x - 1.),
         ])  
         
@@ -242,7 +242,7 @@ class VideoDataset:
             # return frames mask with respect to the vae's latent temporal compression
             data["frames_mask"] = self._fmask_gen(self._t_compress_func(num_frames))
         # video/image transforms: resize, crop, normalize, reshape
-        pixel_values = torch.tensor( data["video"], type=torch.uint8).permute(0, 3, 1, 2) # (t h w c) -> (t c h w)
+        pixel_values = torch.tensor( data["video"], dtype=torch.uint8).permute(0, 3, 1, 2) # (t h w c) -> (t c h w)
         assert pixel_values.shape[1] == 3 and pixel_values.shape[0] ==  num_frames
         
         pixel_values = self.pixel_transforms(pixel_values) 
