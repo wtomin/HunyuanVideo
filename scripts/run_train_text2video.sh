@@ -74,7 +74,6 @@ set -x
 deepspeed --include localhost:0 --master_addr "${CHIEF_IP}" \
 train.py \
     ${params} \
-    ${val_params} \
     ${video_data_params} \
     ${te_params} \
     --task-flag ${task_flag} \
