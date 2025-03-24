@@ -6,8 +6,6 @@ from pathlib import Path
 import decord
 import numpy as np
 
-import mindspore as ms
-
 logger = logging.getLogger(__name__)
 
 
@@ -261,37 +259,3 @@ class VideoPairDataset:
             return []
 
 
-def create_dataloader(
-    dataset,
-    batch_size,
-    ds_name="video",
-    num_parallel_workers=12,
-    max_rowsize=32,
-    shuffle=True,
-    device_num=1,
-    rank_id=0,
-    drop_remainder=True,
-):
-    """
-    Args:
-        ds_config, dataset config, args for ImageDataset or VideoDataset
-        ds_name: dataset name, image or video
-    """
-    column_names = getattr(dataset, "output_columns", ["video"])
-    dataloader = ms.dataset.GeneratorDataset(
-        source=dataset,
-        column_names=column_names,
-        num_shards=device_num,
-        shard_id=rank_id,
-        python_multiprocessing=True,
-        shuffle=shuffle,
-        num_parallel_workers=num_parallel_workers,
-        max_rowsize=max_rowsize,
-    )
-
-    dl = dataloader.batch(
-        batch_size,
-        drop_remainder=drop_remainder,
-    )
-
-    return dl
