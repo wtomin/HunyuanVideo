@@ -31,7 +31,8 @@ def get_deepspeed_config(args: argparse.Namespace,
                     args.adam_beta2
                 ],
                 "eps": args.adam_eps,
-                "weight_decay": args.weight_decay
+                "weight_decay": args.weight_decay,
+                "torch_adam": True
             }
         },
         "gradient_clipping": 1.0,
