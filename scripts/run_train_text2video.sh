@@ -40,7 +40,7 @@ video_data_params=" \
     --csv-path ${CSV_PATH} \
     --video-folder ${VIDEO_FOLDER} \
     --sample-n-frames 129 \
-    --target-size 256 256 \
+    --video-size 256 256 \
     --sample-stride 1 \
     --num-workers 8 \
     --uncond-p 0.1 \

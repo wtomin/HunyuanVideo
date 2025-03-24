@@ -440,6 +440,7 @@ def main(args):
         device=device,
         image_embed_interleave=image_embed_interleave
     )
+    print("Text encoder loaded successfully!")
     if args.text_encoder_2 is not None:
         text_encoder_2 = TextEncoder(
             text_encoder_type=args.text_encoder_2,
@@ -450,6 +451,7 @@ def main(args):
             logger=logger,
             device=device,
         )
+        print("Text encoder 2 loaded successfully!")
     else:
         text_encoder_2 = None
 
@@ -468,7 +470,7 @@ def main(args):
         video_dataset = VideoDataset(
             csv_path=args.csv_path,
             video_folder=args.video_folder,
-            target_size = args.target_size,
+            target_size = args.video_size,
             sample_n_frames=args.sample_n_frames,
             sample_stride=args.sample_stride,
             text_encoder=text_encoder,
