@@ -154,7 +154,7 @@ def add_training_args(parser: argparse.ArgumentParser):
     group.add_argument("--rope-interpolation-factor", type=float, default=1.0, nargs='+',
                        help="Rope interpolation factor.")
 
-    group.add_argument("--log-every", type=int, default=10, help="Log every N update steps.")
+    group.add_argument("--log-every", type=int, default=1, help="Log every N update steps.")
     group.add_argument("--tensorboard", action="store_true", help="Enable TensorBoard logging.")
     group.add_argument("--profile", action="store_true", help="Enable PyTorch profiler.")
     return parser

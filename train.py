@@ -333,6 +333,11 @@ def main(args):
         factor_kwargs=factor_kwargs,
     )
     model = load_state_dict(args, model, logger)
+    
+    # set to train
+    model.train()
+    for param in model.parameters():
+        param.requires_grad_(True)
 
     if args.use_lora:
         for param in model.parameters():
