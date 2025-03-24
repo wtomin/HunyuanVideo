@@ -100,6 +100,8 @@ def add_data_args(parser: argparse.ArgumentParser):
     group.add_argument("--data-type", type=str, default="image", choices=DATA_TYPE, help="Type of the dataset.")
     group.add_argument("--csv-path", type=str, default=None, help="Dataset path for training.")
     group.add_argument("--video-folder", type=str, default=None, help="Dataset path for training.")
+    group.add_argument("--text-emb-folder", type=str, default=None, help="text embeding path for training.")
+    group.add_argument("--empty-text-emb", type=str, default=None, help="empty text embeding path for training.")
     group.add_argument("--sample-n-frames", type=int, default=29,
                        help="How many frames to sample from a video. if using 3d vae, the number should be 4n+1")
     group.add_argument("--sample-stride", type=int, default=1,

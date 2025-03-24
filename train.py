@@ -410,41 +410,45 @@ def main(args):
     )
 
     # Text encoder
-    text_encoder = TextEncoder(
-        text_encoder_type=args.text_encoder,
-        max_length=args.text_len,
-        text_encoder_precision=args.text_encoder_precision,
-        tokenizer_type=args.tokenizer,
-        prompt_template=(
-            PROMPT_TEMPLATE[args.prompt_template]
-            if args.prompt_template is not None
-            else None
-        ),
-        prompt_template_video=(
-            PROMPT_TEMPLATE[args.prompt_template_video]
-            if args.prompt_template_video is not None
-            else None
-        ),
-        hidden_state_skip_layer=args.hidden_state_skip_layer,
-        apply_final_norm=args.apply_final_norm,
-        reproduce=args.reproduce,
-        logger=logger,
-        device=device,
-    )
-    print("Text encoder loaded successfully!")
-    if args.text_encoder_2 is not None:
-        text_encoder_2 = TextEncoder(
-            text_encoder_type=args.text_encoder_2,
-            max_length=args.text_len_2,
-            text_encoder_precision=args.text_encoder_precision_2,
-            tokenizer_type=args.tokenizer_2,
+    train_with_text_embed = args.text_emb_folder is not None 
+    if not train_with_text_embed:
+        text_encoder = TextEncoder(
+            text_encoder_type=args.text_encoder,
+            max_length=args.text_len,
+            text_encoder_precision=args.text_encoder_precision,
+            tokenizer_type=args.tokenizer,
+            prompt_template=(
+                PROMPT_TEMPLATE[args.prompt_template]
+                if args.prompt_template is not None
+                else None
+            ),
+            prompt_template_video=(
+                PROMPT_TEMPLATE[args.prompt_template_video]
+                if args.prompt_template_video is not None
+                else None
+            ),
+            hidden_state_skip_layer=args.hidden_state_skip_layer,
+            apply_final_norm=args.apply_final_norm,
             reproduce=args.reproduce,
             logger=logger,
             device=device,
         )
-        print("Text encoder 2 loaded successfully!")
+        print("Text encoder loaded successfully!")
+        if args.text_encoder_2 is not None:
+            text_encoder_2 = TextEncoder(
+                text_encoder_type=args.text_encoder_2,
+                max_length=args.text_len_2,
+                text_encoder_precision=args.text_encoder_precision_2,
+                tokenizer_type=args.tokenizer_2,
+                reproduce=args.reproduce,
+                logger=logger,
+                device=device,
+            )
+            print("Text encoder 2 loaded successfully!")
+        else:
+            text_encoder_2 = None
     else:
-        text_encoder_2 = None
+        text_encoder, text_encoder_2 = None, None
 
     # ================== Define dtype and forward autocast ===============
     target_dtype = None
@@ -461,6 +465,8 @@ def main(args):
         video_dataset = VideoDataset(
             csv_path=args.csv_path,
             video_folder=args.video_folder,
+            text_emb_folder=args.text_emb_folder,
+            empty_text_emb=args.empty_text_emb,
             target_size = args.video_size,
             sample_n_frames=args.sample_n_frames,
             sample_stride=args.sample_stride,

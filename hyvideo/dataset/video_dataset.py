@@ -259,27 +259,39 @@ class VideoDataset:
             
         }
         latents = torch.tensor(0)
-        text_ids, text_mask = self.get_text_tokens(self.text_encoder, prompt)
+        if self._text_emb_folder:
+            return (
+                pixel_values,
+                latents,
+                torch.tensor(data["prompt_embeds"]),
+                torch.tensor(data["prompt_mask"]),
+                torch.tensor(data["prompt_embeds_2"]),
+                torch.tensor(0),
+                {k: torch.as_tensor(v) if not isinstance(v, str) else v for k, v in kwargs.items()},
+            )
 
-        if self.text_encoder_2 is None:
-            return (
-                pixel_values,
-                latents,
-                text_ids.clone(),
-                text_mask.clone(),
-                {k: torch.as_tensor(v) if not isinstance(v, str) else v for k, v in kwargs.items()},
-            )
         else:
-            text_ids_2, text_mask_2 = self.get_text_tokens(self.text_encoder_2, prompt)
-            return (
-                pixel_values,
-                latents,
-                text_ids.clone(),
-                text_mask.clone(),
-                text_ids_2.clone(),
-                text_mask_2.clone(),
-                {k: torch.as_tensor(v) if not isinstance(v, str) else v for k, v in kwargs.items()},
-            )
+            text_ids, text_mask = self.get_text_tokens(self.text_encoder, prompt)
+
+            if self.text_encoder_2 is None:
+                return (
+                    pixel_values,
+                    latents,
+                    text_ids.clone(),
+                    text_mask.clone(),
+                    {k: torch.as_tensor(v) if not isinstance(v, str) else v for k, v in kwargs.items()},
+                )
+            else:
+                text_ids_2, text_mask_2 = self.get_text_tokens(self.text_encoder_2, prompt)
+                return (
+                    pixel_values,
+                    latents,
+                    text_ids.clone(),
+                    text_mask.clone(),
+                    text_ids_2.clone(),
+                    text_mask_2.clone(),
+                    {k: torch.as_tensor(v) if not isinstance(v, str) else v for k, v in kwargs.items()},
+                )
     def get_bucket(self, thw: Tuple[int, int, int], sample_ids: List[int]) -> Tuple[np.ndarray, ...]:
         batch = [self._get_item(sample_id, thw) for sample_id in sample_ids]
         return tuple(np.stack(item) for item in map(list, zip(*batch)))

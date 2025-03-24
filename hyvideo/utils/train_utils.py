@@ -266,6 +266,8 @@ def prepare_model_inputs(
     latents = latents.to(device)
     text_ids = text_ids.to(device)
     text_mask = text_mask.to(device)
+    text_ids_2 = text_ids_2.to(device) if text_ids_2 is not None else None
+    text_mask_2 = text_mask_2.to(device) if text_mask_2 is not None else None
 
     # ======================================== Encode media ======================================
     # Used for 3D VAE with 2D inputs(image).
@@ -313,21 +315,27 @@ def prepare_model_inputs(
     # ======================================== Encode text ======================================
     # Autocast is handled by text_encoder itself.
     # Whether to apply text_mask is determined by args.use_attention_mask.
-    text_outputs = text_encoder.encode(
-        {"input_ids": text_ids, "attention_mask": text_mask},
-        data_type=batch_args[-1]["type"][0],
-        # semantic_images=semantic_images,  # no semantic images for t2v
-    )
-    text_states = text_outputs.hidden_state
-    text_mask = text_outputs.attention_mask
-    text_states_2 = (
-        text_encoder_2.encode(
-            {"input_ids": text_ids_2, "attention_mask": text_mask_2},
-            data_type=data_type,
-        ).hidden_state
-        if text_encoder_2 is not None
-        else None
-    )
+    train_with_text_embed = text_encoder is None
+    if not train_with_text_embed:
+        text_outputs = text_encoder.encode(
+            {"input_ids": text_ids, "attention_mask": text_mask},
+            data_type=batch_args[-1]["type"][0],
+            # semantic_images=semantic_images,  # no semantic images for t2v
+        )
+        text_states = text_outputs.hidden_state
+        text_mask = text_outputs.attention_mask
+        text_states_2 = (
+            text_encoder_2.encode(
+                {"input_ids": text_ids_2, "attention_mask": text_mask_2},
+                data_type=data_type,
+            ).hidden_state
+            if text_encoder_2 is not None
+            else None
+        )
+    else:
+        text_states = text_ids
+        text_mask = text_mask
+        text_states_2 = text_ids_2 if text_ids_2 is not None else None
 
     # ======================================== Build RoPE ======================================
     target_ndim = 3  # n-d RoPE
